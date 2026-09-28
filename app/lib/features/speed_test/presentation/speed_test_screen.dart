@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/netqira_theme.dart';
+import '../../history/data/netqira_history_repository.dart';
 import '../data/netqira_speed_test_engine.dart';
 
 class SpeedTestScreen extends StatefulWidget {
@@ -49,7 +50,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
       _error = null;
       _snapshot = const SpeedTestSnapshot(
         phase: SpeedTestPhase.selectingServer,
-        message: 'Seleccionando servidor…',
+        message: 'Seleccionando servidorâ€¦',
       );
     });
 
@@ -188,8 +189,8 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                     const SizedBox(height: 8),
                     Text(
                       _error == null
-                          ? 'NETQIRA mide tráfico real contra un servidor compatible con LibreSpeed.'
-                          : 'Puedes reintentar cuando tu conexión esté disponible.',
+                          ? 'NETQIRA mide trÃ¡fico real contra un servidor compatible con LibreSpeed.'
+                          : 'Puedes reintentar cuando tu conexiÃ³n estÃ© disponible.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.58),
@@ -268,7 +269,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                             : const Icon(Icons.bolt_rounded),
                         label: Text(
                           _running
-                              ? 'Midiendo…'
+                              ? 'Midiendoâ€¦'
                               : _snapshot.phase == SpeedTestPhase.completed
                               ? 'Repetir prueba'
                               : 'Iniciar prueba real',
@@ -278,7 +279,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Fase 3 · Motor real de red',
+                      'Fase 3 Â· Motor real de red',
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.36),
                         fontSize: 11,
@@ -365,7 +366,7 @@ class _ServerCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  serverName ?? 'Selección automática',
+                  serverName ?? 'SelecciÃ³n automÃ¡tica',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 13,
