@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/netqira_theme.dart';
+import '../data/netqira_speed_test_engine.dart';
 
 class SpeedTestScreen extends StatefulWidget {
   const SpeedTestScreen({super.key});
@@ -14,14 +15,23 @@ class SpeedTestScreen extends StatefulWidget {
 class _SpeedTestScreenState extends State<SpeedTestScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _scanController;
-  bool _preparing = false;
+  late final NetqiraSpeedTestEngine _engine;
+
+  SpeedTestSnapshot _snapshot = const SpeedTestSnapshot(
+    phase: SpeedTestPhase.idle,
+    message: 'Listo para medir',
+  );
+
+  bool _running = false;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
+    _engine = NetqiraSpeedTestEngine();
     _scanController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1800),
+      duration: const Duration(milliseconds: 1500),
     )..repeat();
   }
 
@@ -31,24 +41,79 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
     super.dispose();
   }
 
-  Future<void> _prepareMeasurement() async {
-    if (_preparing) return;
+  Future<void> _runTest() async {
+    if (_running) return;
 
-    setState(() => _preparing = true);
-    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    setState(() {
+      _running = true;
+      _error = null;
+      _snapshot = const SpeedTestSnapshot(
+        phase: SpeedTestPhase.selectingServer,
+        message: 'Seleccionando servidor…',
+      );
+    });
 
-    if (!mounted) return;
-
-    setState(() => _preparing = false);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Interfaz de medición lista. El motor real se conectará en la Fase 3.',
-        ),
-      ),
-    );
+    try {
+      await _engine.run(
+        onProgress: (snapshot) {
+          if (!mounted) return;
+          setState(() => _snapshot = snapshot);
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString().replaceFirst('Bad state: ', '');
+        _snapshot = SpeedTestSnapshot(
+          phase: SpeedTestPhase.failed,
+          message: _error,
+        );
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _running = false);
+      }
+    }
   }
+
+  String get _statusLabel {
+    switch (_snapshot.phase) {
+      case SpeedTestPhase.idle:
+        return 'PREPARADO';
+      case SpeedTestPhase.selectingServer:
+        return 'SERVIDOR';
+      case SpeedTestPhase.ping:
+        return 'PING';
+      case SpeedTestPhase.download:
+        return 'DESCARGA';
+      case SpeedTestPhase.upload:
+        return 'SUBIDA';
+      case SpeedTestPhase.completed:
+        return 'COMPLETADO';
+      case SpeedTestPhase.failed:
+        return 'ERROR';
+    }
+  }
+
+  double? get _gaugeValue {
+    switch (_snapshot.phase) {
+      case SpeedTestPhase.ping:
+        return _snapshot.pingMs;
+      case SpeedTestPhase.download:
+      case SpeedTestPhase.upload:
+      case SpeedTestPhase.completed:
+        return _snapshot.currentMbps ??
+            _snapshot.downloadMbps ??
+            _snapshot.uploadMbps;
+      case SpeedTestPhase.idle:
+      case SpeedTestPhase.selectingServer:
+      case SpeedTestPhase.failed:
+        return null;
+    }
+  }
+
+  String get _gaugeUnit =>
+      _snapshot.phase == SpeedTestPhase.ping ? 'ms' : 'Mbps';
 
   @override
   Widget build(BuildContext context) {
@@ -64,34 +129,9 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
           Padding(
             padding: const EdgeInsets.only(right: 14),
             child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F2E55),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.08),
-                  ),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.circle, size: 8, color: Color(0xFF2CD6A6)),
-                    SizedBox(width: 6),
-                    Text(
-                      'PREPARADO',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ],
-                ),
+              child: _StatusPill(
+                label: _statusLabel,
+                error: _snapshot.phase == SpeedTestPhase.failed,
               ),
             ),
           ),
@@ -109,7 +149,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                 ),
                 child: Column(
                   children: [
-                    const _ServerCard(),
+                    _ServerCard(serverName: _snapshot.serverName),
                     const SizedBox(height: 24),
                     AnimatedBuilder(
                       animation: _scanController,
@@ -117,7 +157,8 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                         return CustomPaint(
                           painter: _GaugePainter(
                             scanProgress: _scanController.value,
-                            preparing: _preparing,
+                            running: _running,
+                            phaseProgress: _snapshot.progress,
                           ),
                           child: SizedBox(
                             width: 300,
@@ -126,66 +167,75 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                           ),
                         );
                       },
-                      child: _GaugeCenter(preparing: _preparing),
+                      child: _GaugeCenter(
+                        value: _gaugeValue,
+                        unit: _gaugeUnit,
+                        running: _running,
+                      ),
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      _preparing
-                          ? 'Preparando entorno de medición...'
-                          : 'Listo para medir',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
+                      _snapshot.message ?? 'Listo para medir',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: _error == null
+                            ? Colors.white
+                            : const Color(0xFFFF8792),
+                        fontSize: 20,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      _preparing
-                          ? 'Comprobando la interfaz y el estado inicial.'
-                          : 'Los valores permanecerán vacíos hasta conectar el motor real.',
+                      _error == null
+                          ? 'NETQIRA mide tráfico real contra un servidor compatible con LibreSpeed.'
+                          : 'Puedes reintentar cuando tu conexión esté disponible.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.62),
-                        fontSize: 13,
+                        color: Colors.white.withValues(alpha: 0.58),
+                        fontSize: 12,
                         height: 1.45,
                       ),
                     ),
-                    const SizedBox(height: 26),
-                    const Row(
+                    const SizedBox(height: 24),
+                    Row(
                       children: [
                         Expanded(
                           child: _MetricCard(
                             icon: Icons.south_rounded,
                             label: 'Descarga',
+                            value: _snapshot.downloadMbps,
                             unit: 'Mbps',
                           ),
                         ),
-                        SizedBox(width: 10),
+                        const SizedBox(width: 10),
                         Expanded(
                           child: _MetricCard(
                             icon: Icons.north_rounded,
                             label: 'Subida',
+                            value: _snapshot.uploadMbps,
                             unit: 'Mbps',
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 10),
-                    const Row(
+                    Row(
                       children: [
                         Expanded(
                           child: _MetricCard(
                             icon: Icons.multiple_stop_rounded,
                             label: 'Ping',
+                            value: _snapshot.pingMs,
                             unit: 'ms',
                           ),
                         ),
-                        SizedBox(width: 10),
+                        const SizedBox(width: 10),
                         Expanded(
                           child: _MetricCard(
                             icon: Icons.graphic_eq_rounded,
                             label: 'Jitter',
+                            value: _snapshot.jitterMs,
                             unit: 'ms',
                           ),
                         ),
@@ -195,7 +245,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
-                        onPressed: _preparing ? null : _prepareMeasurement,
+                        onPressed: _running ? null : _runTest,
                         style: FilledButton.styleFrom(
                           backgroundColor: NetqiraTheme.primary,
                           foregroundColor: Colors.white,
@@ -206,7 +256,7 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                             borderRadius: BorderRadius.circular(18),
                           ),
                         ),
-                        icon: _preparing
+                        icon: _running
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
@@ -217,16 +267,20 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
                               )
                             : const Icon(Icons.bolt_rounded),
                         label: Text(
-                          _preparing ? 'Preparando...' : 'Preparar medición',
+                          _running
+                              ? 'Midiendo…'
+                              : _snapshot.phase == SpeedTestPhase.completed
+                              ? 'Repetir prueba'
+                              : 'Iniciar prueba real',
                           style: const TextStyle(fontWeight: FontWeight.w900),
                         ),
                       ),
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Fase 2 · Experiencia visual del Speed Test',
+                      'Fase 3 · Motor real de red',
                       style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.38),
+                        color: Colors.white.withValues(alpha: 0.36),
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
                       ),
@@ -242,8 +296,47 @@ class _SpeedTestScreenState extends State<SpeedTestScreen>
   }
 }
 
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.label, required this.error});
+
+  final String label;
+  final bool error;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = error ? const Color(0xFFFF6C7A) : const Color(0xFF2CD6A6);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F2E55),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.circle, size: 8, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ServerCard extends StatelessWidget {
-  const _ServerCard();
+  const _ServerCard({required this.serverName});
+
+  final String? serverName;
 
   @override
   Widget build(BuildContext context) {
@@ -254,15 +347,15 @@ class _ServerCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          _RoundIcon(icon: Icons.public_rounded),
-          SizedBox(width: 12),
+          const _RoundIcon(icon: Icons.public_rounded),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   'Servidor',
                   style: TextStyle(
                     color: Colors.white54,
@@ -270,10 +363,10 @@ class _ServerCard extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                SizedBox(height: 2),
+                const SizedBox(height: 2),
                 Text(
-                  'Selección automática',
-                  style: TextStyle(
+                  serverName ?? 'Selección automática',
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
@@ -282,7 +375,7 @@ class _ServerCard extends StatelessWidget {
               ],
             ),
           ),
-          Icon(Icons.chevron_right_rounded, color: Colors.white38),
+          const Icon(Icons.bolt_rounded, color: NetqiraTheme.cyan, size: 18),
         ],
       ),
     );
@@ -309,9 +402,15 @@ class _RoundIcon extends StatelessWidget {
 }
 
 class _GaugeCenter extends StatelessWidget {
-  const _GaugeCenter({required this.preparing});
+  const _GaugeCenter({
+    required this.value,
+    required this.unit,
+    required this.running,
+  });
 
-  final bool preparing;
+  final double? value;
+  final String unit;
+  final bool running;
 
   @override
   Widget build(BuildContext context) {
@@ -322,7 +421,7 @@ class _GaugeCenter extends StatelessWidget {
         children: [
           AnimatedScale(
             duration: const Duration(milliseconds: 220),
-            scale: preparing ? 1.08 : 1,
+            scale: running ? 1.08 : 1,
             child: const Icon(
               Icons.speed_rounded,
               color: NetqiraTheme.cyan,
@@ -330,19 +429,23 @@ class _GaugeCenter extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            '--',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 48,
-              fontWeight: FontWeight.w900,
-              height: 1,
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: Text(
+              value == null ? '--' : _formatValue(value!),
+              key: ValueKey(value?.toStringAsFixed(1)),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 48,
+                fontWeight: FontWeight.w900,
+                height: 1,
+              ),
             ),
           ),
           const SizedBox(height: 4),
-          const Text(
-            'Mbps',
-            style: TextStyle(
+          Text(
+            unit,
+            style: const TextStyle(
               color: Colors.white54,
               fontSize: 13,
               fontWeight: FontWeight.w800,
@@ -358,11 +461,13 @@ class _MetricCard extends StatelessWidget {
   const _MetricCard({
     required this.icon,
     required this.label,
+    required this.value,
     required this.unit,
   });
 
   final IconData icon;
   final String label;
+  final double? value;
   final String unit;
 
   @override
@@ -394,12 +499,16 @@ class _MetricCard extends StatelessWidget {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    const Text(
-                      '--',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w900,
+                    Flexible(
+                      child: Text(
+                        value == null ? '--' : _formatValue(value!),
+                        overflow: TextOverflow.fade,
+                        softWrap: false,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 4),
@@ -425,11 +534,22 @@ class _MetricCard extends StatelessWidget {
   }
 }
 
+String _formatValue(double value) {
+  if (value >= 100) return value.toStringAsFixed(0);
+  if (value >= 10) return value.toStringAsFixed(1);
+  return value.toStringAsFixed(2);
+}
+
 class _GaugePainter extends CustomPainter {
-  const _GaugePainter({required this.scanProgress, required this.preparing});
+  const _GaugePainter({
+    required this.scanProgress,
+    required this.running,
+    required this.phaseProgress,
+  });
 
   final double scanProgress;
-  final bool preparing;
+  final bool running;
+  final double phaseProgress;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -456,15 +576,31 @@ class _GaugePainter extends CustomPainter {
       ..strokeWidth = 13
       ..strokeCap = StrokeCap.round;
 
-    final scanLength = preparing ? 0.34 : 0.18;
-    final normalizedStart = scanProgress * (1 - scanLength);
-    canvas.drawArc(
-      rect,
-      startAngle + (sweepAngle * normalizedStart),
-      sweepAngle * scanLength,
-      false,
-      activePaint,
-    );
+    if (running) {
+      final progress = phaseProgress.clamp(0.06, 1.0);
+      canvas.drawArc(
+        rect,
+        startAngle,
+        sweepAngle * progress,
+        false,
+        activePaint,
+      );
+
+      final glowPaint = Paint()
+        ..color = NetqiraTheme.cyan.withValues(alpha: 0.55)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round;
+
+      final cursor = scanProgress * 0.12;
+      canvas.drawArc(
+        rect,
+        startAngle + (sweepAngle * math.max(0, progress - cursor - 0.04)),
+        sweepAngle * 0.04,
+        false,
+        glowPaint,
+      );
+    }
 
     final tickPaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.16)
@@ -489,6 +625,7 @@ class _GaugePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _GaugePainter oldDelegate) {
     return oldDelegate.scanProgress != scanProgress ||
-        oldDelegate.preparing != preparing;
+        oldDelegate.running != running ||
+        oldDelegate.phaseProgress != phaseProgress;
   }
 }
